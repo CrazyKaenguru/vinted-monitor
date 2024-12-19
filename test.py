@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 import re
 import config
 import bot
+
 #from bot import send_offer
 #from bot import startbot
 # Definiere die Klasse Angebot
