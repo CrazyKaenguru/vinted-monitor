@@ -11,6 +11,12 @@ import bot
 #from bot import send_offer
 #from bot import startbot
 # Definiere die Klasse Angebot
+
+from dotenv import load_dotenv
+import os
+load_dotenv()  # Load environment variables from .env file
+
+
 firstsearch=True
 class Angebot:
     def __init__(self, title, price, size, link,number,condition,description):
@@ -79,7 +85,7 @@ async def scrape_vinted_page(url, token=None):
     chrome_options.add_argument("--log-level=3")  # Reduziert Logs auf Warnungen und Fehler
 
     # Pfad zum WebDriver (z.B. ChromeDriver)
-    service = Service("C:/Users/Quirin/Downloads/chromedriver-win64/chromedriver-win64/chromedriver.exe",)
+    service = Service(os.getenv("chromium"))
 
     # Starte den WebDriver
     driver = webdriver.Chrome(service=service, options=chrome_options)
