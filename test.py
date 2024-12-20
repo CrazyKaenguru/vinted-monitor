@@ -40,12 +40,50 @@ class Angebot:
         }
 
 
+def update_json_file(file_path, searchobject_channel, angebote, firstsearch):
+    """
+    Aktualisiert die db.json, ohne bestehende externe Einträge zu löschen.
+    """
+    try:
+        # Lade bestehende Daten
+        with open(file_path, 'r', encoding='utf-8') as file:
+            existing_data = json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        existing_data = []
+
+    # Suche nach dem passenden Channel-Eintrag
+    updated = False
+    for entry in existing_data:
+        if entry['searchobject_channel'] == searchobject_channel:
+            # Füge neue Angebote hinzu, die noch nicht existieren
+            existing_numbers = {offer['number'] for offer in entry.get('angebote', [])}
+            new_offers = [offer for offer in angebote if offer['number'] not in existing_numbers]
+            entry['angebote'].extend(new_offers)
+            entry['searchobject_fistsearch'] = firstsearch  # Update firstsearch
+            updated = True
+            break
+
+    # Wenn kein Eintrag für den Channel existiert, füge einen neuen hinzu
+    if not updated:
+        existing_data.append({
+            "searchobject_channel": searchobject_channel,
+            "searchobject_fistsearch": firstsearch,
+            "angebote": angebote
+        })
+
+    # Speichere die aktualisierten Daten zurück in die Datei
+    with open(file_path, 'w', encoding='utf-8') as file:
+        json.dump(existing_data, file, ensure_ascii=False, indent=4)
+
+    print("db.json erfolgreich aktualisiert.")
+
+
 # Funktion zum Scrapen der Produktseite
 async def scrape_product_page(product_url, driver):
     # Öffne die Produktseite
-    driver.get(product_url)
-    time.sleep(5)  # Warten, bis die Seite geladen ist
-    print("scraping new")
+    await asyncio.to_thread(driver.get, url) 
+    await asyncio.sleep(2)
+    print("scraping: "+product_url)
     # Holen des HTML-Codes der Seite
     page_source = driver.page_source
     soup = BeautifulSoup(page_source, "html.parser")
@@ -73,8 +111,15 @@ async def scrape_product_page(product_url, driver):
     
     
 # Funktion zum Scrapen einer Vinted-Seite mit Selenium
-async def scrape_vinted_page(url, token=None):
-    global firstsearch
+async def scrape_vinted_page(data,searchobject_channel):
+    for entry in data:
+     if entry['searchobject_channel'] == searchobject_channel:
+        url=entry['searchobject_url']
+        print("url:" +url)
+        firstsearch=entry['searchobject_fistsearch']
+        alteangebote=entry['angebote']
+        
+    
     # Chrome Options für den Headless-Modus (optional)
     chrome_options = Options()
     chrome_options.add_argument("--headless")  # Optional: Läuft ohne UI
@@ -88,17 +133,14 @@ async def scrape_vinted_page(url, token=None):
     service = Service(os.getenv("chromium"))
 
     # Starte den WebDriver
-    driver = webdriver.Chrome(service=service, options=chrome_options)
+    driver = await asyncio.to_thread(webdriver.Chrome, service=service, options=chrome_options)
     
-    # Lade die Seite
-    driver.get(url)
-
+    await asyncio.to_thread(driver.get, url)  # Die get-Methode ausführen
+    await asyncio.sleep(5) 
     # Optional: Warten, bis die Seite vollständig geladen ist
-    time.sleep(5)  # Warte 5 Sekunden, um sicherzustellen, dass die Seite vollständig geladen ist
+   
 
-    # Optionales Token (Falls erforderlich)
-    if token:
-        driver.execute_script(f"window.localStorage.setItem('token', '{token}')")
+    
 
     # Hole den HTML-Code der Seite
     page_source = driver.page_source
@@ -176,7 +218,7 @@ async def scrape_vinted_page(url, token=None):
      return False
 
 
-    alteangebote= load_json_file("angebote.json")
+    
     if not firstsearch:
      for angebot in angebote:
         number=angebot.get("number","no number")
@@ -189,14 +231,18 @@ async def scrape_vinted_page(url, token=None):
                 print("neues Angebot: "+link)
                 condition, description = await scrape_product_page(link, driver)
                 angebot = Angebot(title, price, size, link, number, condition, description)
-                await  bot.send_offer(angebot)
+                await  bot.send_offer(angebot,int(searchobject_channel))
     
      # Schließe den WebDriver
     firstsearch=False
     driver.quit()
     # Speichern der Angebote in einer JSON-Datei
-    with open("angebote.json", "w", encoding="utf-8") as json_file:
-        json.dump(angebote, json_file, ensure_ascii=False, indent=4)
+   # with open("angebote.json", "w", encoding="utf-8") as json_file:
+     #   json.dump(angebote, json_file, ensure_ascii=False, indent=4)4
+    
+    
+    update_json_file('db.json', searchobject_channel, angebote, firstsearch)
+    
     
     print("Angebote wurden in 'angebote.json' gespeichert.")
 
@@ -221,17 +267,49 @@ url = config.get("url")
 
 
 # Hauptfunktion, die alles startet
-async def main():
-    # Starte den Bot
-    bot_task = asyncio.create_task(bot.start_bot())
-    await asyncio.sleep(5)
-    # Führe die restlichen Tasks (z.B. Scraping) aus
-    while True:
-        await scrape_vinted_page(url)
-       # await asyncio.sleep(5)  # Warte 15 Sekunden bevor der nächste Scrape ausgeführt wird
 
-    # Warte darauf, dass der Bot die Verbindung hält
-    await bot_task
+
+
+# Optimierte run_scraping_loop-Funktion
+async def run_scraping_loop():
+    while True:
+        try:
+            # Lade die db.json-Datei
+            with open('db.json', 'r', encoding='utf-8') as file:
+                loaded_database = json.load(file)
+        except (FileNotFoundError, json.JSONDecodeError):
+            print("⚠️ Fehler beim Laden der Datenbank. Warte 10 Sekunden und versuche es erneut...")
+            await asyncio.sleep(10)
+            continue
+
+        # Erstelle parallele Scraping-Tasks für alle Channels
+        tasks = []
+        for entry in loaded_database:
+            searchobject_channel = entry['searchobject_channel']
+            tasks.append(asyncio.create_task(scrape_vinted_page(loaded_database, searchobject_channel)))
+
+        # Führe alle Scraping-Tasks gleichzeitig aus
+        if tasks:
+            await asyncio.gather(*tasks)
+            print("🔄 Eine Runde Scraping abgeschlossen. Starte neu in 10 Sekunden...")
+        else:
+            print("⚠️ Keine Einträge in der Datenbank gefunden.")
+
+        # Verzögerung vor der nächsten Runde
+        await asyncio.sleep(10)
+
+# Hauptfunktion zum Starten des Bots und Scraping-Tasks
+async def main():
+    # Starte den Bot in einem asynchronen Task
+    bot_task = asyncio.create_task(bot.start_bot())
+    await asyncio.sleep(6)
+
+    # Starte das Scraping parallel in einem eigenen Task
+    scraping_task = asyncio.create_task(run_scraping_loop())
+
+    # Warte darauf, dass beide Tasks laufen
+    await asyncio.gather(bot_task, scraping_task)
 
 # Starte alles im Event-Loop
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

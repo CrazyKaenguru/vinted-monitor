@@ -1,47 +1,93 @@
-
-# bot.py
 import discord
 from discord.ext import commands
 import asyncio
 from dotenv import load_dotenv
 import os
-load_dotenv()  # Load environment variables from .env file
-TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+import json
 
+# Lade Umgebungsvariablen
+load_dotenv()  # Lädt die Umgebungsvariablen aus der .env-Datei
+TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
 # Erstelle ein Bot-Objekt mit den entsprechenden Präfixen
 intents = discord.Intents.default()
 intents.message_content = True  # Ermöglicht es dem Bot, Nachrichten zu lesen
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Beispielangebot
-angebot = {
-    "titel": "Ralph Lauren Hemd",
-    "beschreibung": "Stylisches Ralph Lauren Hemd in gutem Zustand.",
-    "preis": "25,00",
-    "größe": "M / 38 / 10",
-    "zustand": "Gut",
-    "marke": "Ralph Lauren",
-    "link": "https://www.vinted.de/items/5541013082-pantalon-ralph-lauren-bleu-clair-w40",
-    "bilder": [
-        "https://example.com/image1.jpg",  # Hauptbild
-        "https://example.com/image2.jpg",  # Thumbnail
-        "https://example.com/image3.jpg",  # Weitere Bilder
-        "https://example.com/image4.jpg"   # Weitere Bilder
-    ],
-    "benutzername": "ronnyvintage13",
-    "benutzer_link": "https://www.vinted.de/member/199626532-ronnyvintage13",
-    "benutzer_bild": "https://example.com/user_image.jpg",
-}
-
 # Ereignis: Bot ist online und bereit
 @bot.event
 async def on_ready():
-    print(f'Bot ist eingeloggt als {bot.user}')
-   # await send_offer()
+    print(f'✅ Bot ist eingeloggt als {bot.user}')
+
+# Funktion zum Laden der JSON-Datei
+async def load_json_file(file_path):
+    try:
+        with open(file_path, "r", encoding="utf-8") as file:
+            return json.load(file)  # Lade die JSON-Datei als Python-Objekt
+    except (FileNotFoundError, json.JSONDecodeError):
+        print("⚠️ Datei nicht gefunden oder leer. Eine neue Datenbank wird erstellt.")
+        return []  # Falls Datei nicht existiert oder leer ist, starte mit leerer Liste
+
+# Funktion zum Speichern der JSON-Datei
+async def save_json_file(file_path, data):
+    with open(file_path, "w", encoding="utf-8") as file:
+        json.dump(data, file, indent=4, ensure_ascii=False)
+
+# Bot-Befehl: URL hinzufügen
+@bot.command()
+async def seturl(ctx, url: str):
+    print("🔹 seturl Befehl empfangen!")
+    channel_id = str(ctx.channel.id)
+    file_path = 'db.json'
+
+    # Lade die Datenbank
+    loaded_database = await load_json_file(file_path)
+
+    # Prüfe, ob bereits eine URL existiert
+    for entry in loaded_database:
+        if entry['searchobject_channel'] == channel_id:
+            await ctx.send(f"⚠️ In diesem Channel wurde bereits eine URL gesetzt: `{entry.get('searchobject_url', 'Keine URL vorhanden')}`")
+            return
+
+    # Füge einen neuen Eintrag hinzu
+    new_entry = {
+        "searchobject_channel": channel_id,
+        "searchobject_url": url,
+        "angebote": [],
+        "searchobject_fistsearch": True
+    }
+    loaded_database.append(new_entry)
+
+    # Speichere die Änderungen
+    await save_json_file(file_path, loaded_database)
+    print("✅ URL erfolgreich gespeichert!")
+    await ctx.send(f"✅ Die URL wurde erfolgreich gesetzt: `{url}`")
+
+# Bot-Befehl: URL entfernen
+@bot.command()
+async def removeurl(ctx):
+    print("🔹 removeurl Befehl empfangen!")
+    channel_id = str(ctx.channel.id)
+    file_path = 'db.json'
+
+    # Lade die bestehende Datenbank
+    loaded_database = await load_json_file(file_path)
+    print("🔍 Datenbank geladen.")
+
+    # Filtere die Einträge, um die Channel-ID zu entfernen
+    new_database = [entry for entry in loaded_database if entry['searchobject_channel'] != channel_id]
+
+    # Prüfe, ob ein Eintrag entfernt wurde
+    if len(new_database) < len(loaded_database):
+        await save_json_file(file_path, new_database)
+        print("✅ Eintrag entfernt.")
+        await ctx.send(f"✅ Der Eintrag für diesen Channel wurde erfolgreich entfernt.")
+    else:
+        print("⚠️ Kein Eintrag zum Entfernen gefunden.")
+        await ctx.send(f"⚠️ Kein Eintrag für diesen Channel gefunden.")
 
 # Funktion, um ein Angebot an Discord zu senden
-async def send_offer(angebot):
+async def send_offer(angebot, channel_id):
     embed = discord.Embed(
         title=angebot.title,
         description=angebot.title,
@@ -49,22 +95,20 @@ async def send_offer(angebot):
         color=5814783
     )
 
-    embed.add_field(name="price", value=f"{angebot.price}€", inline=True)
-    embed.add_field(name="size", value=angebot.size, inline=True)
-    embed.add_field(name="condition", value=angebot.condition, inline=True)
-    embed.add_field(name="description", value=angebot.description, inline=True)
+    embed.add_field(name="Preis", value=f"{angebot.price}€", inline=True)
+    embed.add_field(name="Größe", value=angebot.size, inline=True)
+    embed.add_field(name="Zustand", value=angebot.condition, inline=True)
+    embed.add_field(name="Beschreibung", value=angebot.description, inline=True)
     
-    #embed.set_image(url=angebot['bilder'][0])  # Hauptbild
-    #embed.set_thumbnail(url=angebot['bilder'][1])  # Thumbnail
-    
-    #embed.add_field(name="Weitere Bilder", value='\n'.join([f"[Bild {i+1}]({bild})" for i, bild in enumerate(angebot['bilder'][2:])]), inline=False)
-    #embed.add_field(name="Details", value=f"[Zum Angebot]({angebot['link']})", inline=False)
-
-    # Sende das Embed in einen Channel
-    channel = bot.get_channel(950418591088529451)  # Ersetze mit der echten Kanal-ID
-    await channel.send(embed=embed)
+    channel = bot.get_channel(channel_id)
+    if channel:
+        await channel.send(embed=embed)
+    else:
+        print(f"⚠️ Kanal-ID {channel_id} nicht gefunden!")
 
 # Funktion zum Starten des Bots
 async def start_bot():
-    await bot.start(TOKEN)
-
+    try:
+        await bot.start(TOKEN)
+    except Exception as e:
+        print(f"❌ Fehler beim Starten des Bots: {e}")
