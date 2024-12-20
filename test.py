@@ -291,12 +291,12 @@ async def run_scraping_loop():
         # Führe alle Scraping-Tasks gleichzeitig aus
         if tasks:
             await asyncio.gather(*tasks)
-            print("🔄 Eine Runde Scraping abgeschlossen. Starte neu in 10 Sekunden...")
+            print("🔄 Eine Runde Scraping abgeschlossen. Starte neu...")
         else:
             print("⚠️ Keine Einträge in der Datenbank gefunden.")
 
         # Verzögerung vor der nächsten Runde
-        await asyncio.sleep(10)
+       # await asyncio.sleep(10)
 
 # Hauptfunktion zum Starten des Bots und Scraping-Tasks
 async def main():
