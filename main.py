@@ -8,14 +8,14 @@ import re
 import os
 from dotenv import load_dotenv
 import asyncio
-import bot
+import bot  # Enthält unter anderem die Funktion send_offer
+from discord.ext import commands
+import os
 
-# Load environment variables from .env file
+# Lade Umgebungsvariablen aus der .env-Datei
 load_dotenv()
 
-# Global variable for first search flag
-firstsearch = True
-
+# Klasse für Angebote
 class Angebot:
     def __init__(self, title, price, size, link, number, condition, description, image_url):
         self.title = title
@@ -39,119 +39,140 @@ class Angebot:
             "image_url": self.image_url
         }
 
-# Function to update the JSON database
-def update_json_file(file_path, searchobject_channel, angebote, firstsearch):
+# Aktualisiere die JSON-Datei für einen einzelnen Monitor-Channel
+def update_channel_json(file_path, new_offers, firstsearch):
     try:
-        # Load existing data from the JSON file
         with open(file_path, 'r', encoding='utf-8') as file:
-            existing_data = json.load(file)
+            data = json.load(file)
     except (FileNotFoundError, json.JSONDecodeError):
-        existing_data = []
+        data = {}
 
-    updated = False
-    for entry in existing_data:
-        if entry['searchobject_channel'] == searchobject_channel:
-            existing_numbers = {offer['number'] for offer in entry.get('angebote', [])}
-            new_offers = [offer for offer in angebote if offer['number'] not in existing_numbers]
-            entry['angebote'].extend(new_offers)
-            entry['searchobject_fistsearch'] = firstsearch
-            updated = True
-            break
+    existing_offers = data.get("angebote", [])
+    existing_numbers = {offer.get("number") for offer in existing_offers}
+    # Füge nur Angebote hinzu, die noch nicht existieren
+    additional_offers = [offer for offer in new_offers if offer.get("number") not in existing_numbers]
+    data["angebote"] = existing_offers + additional_offers
+    data["searchobject_fistsearch"] = firstsearch
 
-    if not updated:
-        existing_data.append({
-            "searchobject_channel": searchobject_channel,
-            "searchobject_fistsearch": firstsearch,
-            "angebote": angebote
-        })
-
-    # Write the updated data back to the file
     with open(file_path, 'w', encoding='utf-8') as file:
-        json.dump(existing_data, file, ensure_ascii=False, indent=4)
+        json.dump(data, file, ensure_ascii=False, indent=4)
+    print(f"{file_path} successfully updated.")
 
-    print("db.json successfully updated.")
-
-# Function to scrape product details (like condition, description, and image) from the product page
 async def scrape_product_page(product_url, driver):
-    # Load the product page using Selenium WebDriver
-    await asyncio.to_thread(driver.get, product_url)  # Run Selenium actions in a background thread
-    await asyncio.sleep(5)  # Allow some time for the page to load
+    await asyncio.to_thread(driver.get, product_url)
+    await asyncio.sleep(5)  # Warte, bis die Seite vollständig geladen ist
 
     print(f"Scraping: {product_url}")
-
     page_source = driver.page_source
     soup = BeautifulSoup(page_source, "html.parser")
-    
-    # Extract product details
+
+    # Standardwerte
     condition = "Unbekannt"
     description = "Keine Beschreibung gefunden"
     image_url = "Kein Bild gefunden"
+    size = "Keine Größe gefunden"
 
-    # Description extraction
+    # Beschreibung extrahieren
     description_tag = soup.find("div", itemprop="description")
     if description_tag:
         description = description_tag.get_text(strip=True)[:1024]
 
-    # Image extraction
-    # Find the img tag with the correct class and data-testid
+    # Bild extrahieren
     img_tag = soup.find("img", class_="web_ui__Image__content", attrs={"data-testid": "item-photo-1--img"})
     if img_tag:
         image_url = img_tag['src']
-    else:
-     image_url = "Kein Bild gefunden"
 
-  
-    # Condition extraction
-    condition_tag = soup.find("div", class_="details-list__item-value--redesign", itemprop="status")
+    # Zustand extrahieren
+    condition_tag = soup.find("div", {"data-testid": "item-attributes-status"})
     if condition_tag:
-    # Find the <span> inside this div and extract its text
-        condition = condition_tag.find("span").text.strip() if condition_tag.find("span") else "Unbekannt"
-    return condition, description, image_url
+        condition_value = condition_tag.find("span", class_="web_ui__Text__bold")
+        if condition_value:
+            condition = condition_value.text.strip()
 
-# Function to scrape the Vinted page for product listings
-async def scrape_vinted_page(data, searchobject_channel):
-    for entry in data:
-        if entry['searchobject_channel'] == searchobject_channel:
-            url = entry['searchobject_url']
-            print(f"Scraping URL: {url}")
-            firstsearch = entry['searchobject_fistsearch']
-            alteangebote = entry['angebote']
+    # Größe extrahieren
+    size_tag = soup.find("div", {"data-testid": "item-attributes-size"})
+    if size_tag:
+        size_value = size_tag.find("span", class_="web_ui__Text__bold")
+        if size_value:
+            size = size_value.text.strip()
 
-    # Chrome options for headless browsing
+    return condition, size, description, image_url
+
+# Funktion, um die Vinted-Seite für einen Monitor-Channel zu scrapen
+async def scrape_vinted_page_for_channel(searchobject_channel):
+    database_folder = "databases"
+    file_path = os.path.join(database_folder, f"{searchobject_channel}.json")
+    
+    try:
+        with open(file_path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        print(f"⚠️ Datei {file_path} nicht gefunden oder ungültig.")
+        return
+    
+    
+    # Wenn "removed" auf True gesetzt ist, ignoriere die Datei
+    if data.get("removed", False):
+        print(f"⚠️ Channel {searchobject_channel} wurde entfernt, überspringe.")
+        return
+    
+    
+    url = data.get("searchobject_url")
+    if not url:
+        print(f"Keine URL für Channel {searchobject_channel} gefunden.")
+        return
+
+    # Falls der URL-String nicht mit "http" beginnt, voranstellen
+    if not url.startswith("http"):
+        url = "https://" + url
+
+    firstsearch_flag = data.get("searchobject_fistsearch", True)
+    alteangebote = data.get("angebote", [])
+
+    # Konfiguriere Chrome für Headless-Browsing
     chrome_options = Options()
-    chrome_options.add_argument("--headless")  # Headless mode (no UI)
+    chrome_options.add_argument("--headless")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--enable-unsafe-swiftshader")
     chrome_options.add_argument("--disable-logging")
     chrome_options.add_argument("--log-level=3")
 
-    # Set path for the WebDriver
-    service = Service(os.getenv("chromium"))  # Assuming the path is set in .env
-
-    # Initialize the WebDriver
+    service = Service(os.getenv("chromium"))
     driver = await asyncio.to_thread(webdriver.Chrome, service=service, options=chrome_options)
+    
+    # Abruf der Hauptseite mit Fehlerbehandlung, falls die URL nicht erreichbar ist
+    try:
+        await asyncio.to_thread(driver.get, url)
+        await asyncio.sleep(5)
+    except Exception as e:
+        error_msg = f"⚠️ Die URL {url} ist nicht erreichbar. Fehler: {e}"
+        print(error_msg)
+    #    discord_channel = bot.get_channel(int(searchobject_channel)) 
+       # if discord_channel:
+       #     await discord_channel.send(error_msg)
+        driver.quit()
+        return
 
-    # Fetch the main Vinted page
-    await asyncio.to_thread(driver.get, url)
-    await asyncio.sleep(5)  # Allow the page to load
-
-    # Parse the page with BeautifulSoup
     page_source = driver.page_source
     soup = BeautifulSoup(page_source, "html.parser")
 
-    # Find product listings
+    # Finde Produktlisten – hier werden die ersten 10 Elemente verarbeitet
     items = soup.find_all("div", class_="new-item-box__container")[:10]
     
-    angebote = []
+    scraped_offers = []
     if items:
         for item in items:
+            
             item_link = item.find("a", class_="new-item-box__overlay")
             link = item_link['href'] if item_link else "Kein Link gefunden"
             
-            title = item.find("p", class_="web_ui__Text__text web_ui__Text__caption web_ui__Text__left web_ui__Text__truncated")
-            title_text = title.text.strip() if title else "Kein Titel gefunden"
+            overlay_link = soup.find("a", class_="new-item-box__overlay new-item-box__overlay--clickable")
+            full_title = overlay_link["title"].strip() if overlay_link and overlay_link.has_attr("title") else "Kein Titel gefunden"
 
+            # Extrahiere den Teil vor dem ersten Komma, also nur "Jogging Nike Tech Gris"
+            title_text = full_title.split(",")[0].strip()
+            print(title_text)
             size = "Keine Größe gefunden"
             descriptions = item.find_all("div", class_="new-item-box__description")
             for desc in descriptions:
@@ -160,68 +181,87 @@ async def scrape_vinted_page(data, searchobject_channel):
                     size = size_paragraph.text.strip()
                     break
 
-            price = item.find("p", class_="web_ui__Text__text web_ui__Text__caption web_ui__Text__left web_ui__Text__muted")
-            price_text = price.text.strip() if price else "Kein Preis gefunden"
+            price_tag = item.find("p", class_="web_ui__Text__text web_ui__Text__caption web_ui__Text__left web_ui__Text__muted")
+            price_text = price_tag.text.strip() if price_tag else "Kein Preis gefunden"
             
-            # Extract item number from the link
             match = re.search(r'/items/(\d+)-', link)
             number = match.group(1) if match else 0
 
-            # Create Angebot object and append to the list
-            condition, description, image_url = "0", "0", "0"
-            angebot = Angebot(title_text, price_text, size, link, number, condition, description, image_url)
-            angebote.append(angebot.to_dict())
+            # Zunächst werden Standardwerte gesetzt; spätere Detailinfos nur bei neuen Angeboten
+            condition = "Unbekannt"
+            desc_text = "Keine Beschreibung gefunden"
+            image_url = "Kein Bild gefunden"
+            offer = Angebot(title_text, price_text, size, link, number, condition, desc_text, image_url)
+            scraped_offers.append(offer.to_dict())
     else:
         print("Keine Artikel auf der Seite gefunden.")
+    
+    # Falls nicht der erste Durchlauf: Detailinfos für neue Angebote ermitteln
+    if not firstsearch_flag:
+        for offer_dict in scraped_offers:
+            number = offer_dict.get("number")
+            if number and not any(existing.get("number") == number for existing in alteangebote):
+                print(f"Neues Angebot: {offer_dict.get('link')}")
+                condition, size, desc_text, image_url = await scrape_product_page(offer_dict.get("link"), driver)
+                offer_dict.update({
+                    "condition": condition,
+                    "description": desc_text,
+                    "image_url": image_url,
+                    "size":size
+                })
+                # Sende das Angebot über den Bot
+                await bot.send_offer(
+                    Angebot(
+                        offer_dict.get("title"),
+                        offer_dict.get("price"),
+                        offer_dict.get("size"),
+                        offer_dict.get("link"),
+                        number,
+                        condition,
+                        desc_text,
+                        image_url
+                    ),
+                    int(searchobject_channel)
+                )
+    
+    # Aktualisiere die JSON-Datei für diesen Channel mit den neuen Angeboten
+    update_channel_json(file_path, scraped_offers, False)
+    
+    driver.quit()
+    print(f"Scraping für Channel {searchobject_channel} abgeschlossen.")
 
-    # Scrape additional details if not the first search
-    if not firstsearch:
-        for angebot in angebote:
-            number = angebot.get("number", "no number")
-            if number != "no number" and not any(existing_offer.get("number") == number for existing_offer in alteangebote):
-                title = angebot.get("title", "Kein Titel")
-                price = angebot.get("price", "Kein Preis")
-                size = angebot.get("size", "Keine Größe")
-                link = angebot.get("link", "Kein Link")
-                print(f"Neues Angebot: {link}")
-                condition, description, image_url = await scrape_product_page(link, driver)
-                angebot = Angebot(title, price, size, link, number, condition, description, image_url)
-                await bot.send_offer(angebot, int(searchobject_channel))
-
-    firstsearch = False
-    driver.quit()  # Quit the driver when done
-
-    # Update JSON with the latest offers
-    update_json_file('db.json', searchobject_channel, angebote, firstsearch)
-    print("Angebote wurden in 'db.json' gespeichert.")
-
-# Main scraping loop
+# Hauptschleife: Iteriere über alle JSON-Dateien im Ordner "databases" und starte für jeden Scraping-Task
 async def run_scraping_loop():
+    database_folder = "databases"
     while True:
-        try:
-            with open('db.json', 'r', encoding='utf-8') as file:
-                loaded_database = json.load(file)
-        except (FileNotFoundError, json.JSONDecodeError):
-            print("⚠️ Fehler beim Laden der Datenbank. Warte 10 Sekunden und versuche es erneut...")
+        if not os.path.exists(database_folder):
+            print("Keine Datenbank-Dateien gefunden.")
             await asyncio.sleep(10)
             continue
 
+        json_files = [f for f in os.listdir(database_folder) if f.endswith(".json")]
+        if not json_files:
+            print("⚠️ Keine Einträge in der Datenbank gefunden.")
+            await asyncio.sleep(10)
+            continue
+        
         tasks = []
-        for entry in loaded_database:
-            searchobject_channel = entry['searchobject_channel']
-            tasks.append(asyncio.create_task(scrape_vinted_page(loaded_database, searchobject_channel)))
-
+        for filename in json_files:
+            # Extrahiere die Channel-ID aus dem Dateinamen (z. B. "123456789.json")
+            channel_id = os.path.splitext(filename)[0]
+            tasks.append(asyncio.create_task(scrape_vinted_page_for_channel(channel_id)))
+        
         if tasks:
             await asyncio.gather(*tasks)
             print("🔄 Eine Runde Scraping abgeschlossen. Starte neu...")
         else:
-            print("⚠️ Keine Einträge in der Datenbank gefunden.")
+            print("⚠️ Keine Tasks erstellt.")
+        await asyncio.sleep(1)  # 60 Sekunden Pause bis zur nächsten Runde
 
-# Main function to start the bot and scraping tasks
+# Main-Funktion: Starte den Bot und den Scraping-Loop gleichzeitig
 async def main():
     bot_task = asyncio.create_task(bot.start_bot())
-    await asyncio.sleep(6)
-
+    await asyncio.sleep(6)  # Kleine Wartezeit, damit der Bot initialisiert ist
     scraping_task = asyncio.create_task(run_scraping_loop())
     await asyncio.gather(bot_task, scraping_task)
 
